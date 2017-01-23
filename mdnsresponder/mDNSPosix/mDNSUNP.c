@@ -203,7 +203,9 @@ gotError:
     }
 done:
     if (sockfd != -1) {
-        close(sockfd);
+        int rv;
+        rv = close(sockfd);
+        assert(rv == 0);
     }
     if (fp != NULL) {
         fclose(fp);

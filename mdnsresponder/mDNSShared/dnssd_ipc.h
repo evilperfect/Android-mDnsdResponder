@@ -41,7 +41,6 @@
 #   define dnssd_EWOULDBLOCK    WSAEWOULDBLOCK
 #   define dnssd_EINTR          WSAEINTR
 #   define dnssd_ECONNRESET     WSAECONNRESET
-#   define dnssd_sock_t         SOCKET
 #   define dnssd_socklen_t      int
 #   define dnssd_close(sock)    closesocket(sock)
 #   define dnssd_errno          WSAGetLastError()
@@ -58,8 +57,8 @@ extern char *win32_strerror(int inErrorCode);
 #   include <stdio.h>
 #   include <stdlib.h>
 #   include <sys/stat.h>
-#	include <sys/socket.h>
-#	include <netinet/in.h>
+#   include <sys/socket.h>
+#   include <netinet/in.h>
 #   include <arpa/inet.h>
 #   define dnssd_InvalidSocket  -1
 #   define dnssd_SocketValid(s) ((s) >= 0)
@@ -67,7 +66,6 @@ extern char *win32_strerror(int inErrorCode);
 #   define dnssd_EINTR          EINTR
 #   define dnssd_ECONNRESET     ECONNRESET
 #   define dnssd_EPIPE          EPIPE
-#   define dnssd_sock_t         int
 #   define dnssd_socklen_t      unsigned int
 #   define dnssd_close(sock)    close(sock)
 #   define dnssd_errno          errno

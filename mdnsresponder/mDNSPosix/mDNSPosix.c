@@ -140,7 +140,7 @@ mDNSlocal void SockAddrTomDNSAddr(const struct sockaddr *const sa, mDNSAddr *ipA
 
 // mDNS core calls this routine when it needs to send a packet.
 mDNSexport mStatus mDNSPlatformSendUDP(const mDNS *const m, const void *const msg, const mDNSu8 *const end,
-                                       mDNSInterfaceID InterfaceID, UDPSocket *src, const mDNSAddr *dst, 
+                                       mDNSInterfaceID InterfaceID, UDPSocket *src, const mDNSAddr *dst,
                                        mDNSIPPort dstPort, mDNSBool useBackgroundTrafficClass)
 {
     int err = 0;
@@ -311,13 +311,6 @@ mDNSlocal void SocketDataReady(mDNS *const m, PosixNetworkInterface *intf, int s
     if (packetLen >= 0)
         mDNSCoreReceive(m, &packet, (mDNSu8 *)&packet + packetLen,
                         &senderAddr, senderPort, &destAddr, MulticastDNSPort, InterfaceID);
-}
-
-mDNSexport mDNSBool mDNSPlatformPeekUDP(mDNS *const m, UDPSocket *src)
-{
-    (void)m;    // unused
-    (void)src;  // unused
-    return mDNSfalse;
 }
 
 mDNSexport TCPSocket *mDNSPlatformTCPSocket(mDNS * const m, TCPSocketFlags flags, mDNSIPPort * port, mDNSBool useBackgroundTrafficClass)
@@ -523,11 +516,7 @@ mDNSexport int ParseDNSServers(mDNS *m, const char *filePath)
             numOfServers++;
         }
     }
-
-    if (fp)
-    {
-      fclose(fp);
-    }
+	fclose(fp);
     return (numOfServers > 0) ? 0 : -1;
 }
 
@@ -593,18 +582,19 @@ mDNSexport mDNSu32 mDNSPlatformInterfaceIndexfromInterfaceID(mDNS *const m, mDNS
 // interface must have already been deregistered with the mDNS core.
 mDNSlocal void FreePosixNetworkInterface(PosixNetworkInterface *intf)
 {
+    int rv;
     assert(intf != NULL);
     if (intf->intfName != NULL) free((void *)intf->intfName);
-    if (intf->multicastSocket4 != -1) 
+    if (intf->multicastSocket4 != -1)
     {
-        close(intf->multicastSocket4);
-
+        rv = close(intf->multicastSocket4);
+        assert(rv == 0);
     }
 #if HAVE_IPV6
     if (intf->multicastSocket6 != -1)
     {
-        close(intf->multicastSocket6);
-
+        rv = close(intf->multicastSocket6);
+        assert(rv == 0);
     }
 #endif
 
@@ -868,10 +858,12 @@ mDNSlocal int SetupSocket(struct sockaddr *intfAddr, mDNSIPPort port, int interf
     }
 
     // Clean up
-    if (err != 0 && *sktPtr != -1) 
+    if (err != 0 && *sktPtr != -1)
     {
-        close(*sktPtr);
-        *sktPtr = -1; 
+        int rv;
+        rv = close(*sktPtr);
+        assert(rv == 0);
+        *sktPtr = -1;
     }
     assert((err == 0) == (*sktPtr != -1));
     return err;
@@ -943,8 +935,8 @@ mDNSlocal int SetupOneInterface(mDNS *const m, struct sockaddr *intfAddr, struct
     // and skip the probe phase of the probe/announce packet sequence.
     intf->coreIntf.DirectLink = mDNSfalse;
 #ifdef DIRECTLINK_INTERFACE_NAME
-	if (strcmp(intfName, STRINGIFY(DIRECTLINK_INTERFACE_NAME)) == 0)
-		intf->coreIntf.DirectLink = mDNStrue;
+    if (strcmp(intfName, STRINGIFY(DIRECTLINK_INTERFACE_NAME)) == 0)
+        intf->coreIntf.DirectLink = mDNStrue;
 #endif
     intf->coreIntf.SupportsUnicastMDNSResponse = mDNStrue;
 
@@ -1356,16 +1348,19 @@ mDNSexport mStatus mDNSPlatformInit(mDNS *const m)
 // In our case all we need to do is to tear down every network interface.
 mDNSexport void mDNSPlatformClose(mDNS *const m)
 {
+    int rv;
     assert(m != NULL);
     ClearInterfaceList(m);
-    if (m->p->unicastSocket4 != -1) 
+    if (m->p->unicastSocket4 != -1)
     {
-        close(m->p->unicastSocket4);
+        rv = close(m->p->unicastSocket4);
+        assert(rv == 0);
     }
 #if HAVE_IPV6
     if (m->p->unicastSocket6 != -1)
     {
-        close(m->p->unicastSocket6);
+        rv = close(m->p->unicastSocket6);
+        assert(rv == 0);
     }
 #endif
 }
@@ -1413,14 +1408,36 @@ mDNSexport void    mDNSPlatformUnlock (const mDNS *const m)
 // On the Posix platform this maps directly to the ANSI C strcpy.
 mDNSexport void    mDNSPlatformStrCopy(void *dst, const void *src)
 {
-    strcpy((char *)dst, (char *)src);
+    strcpy((char *)dst, (const char *)src);
+}
+
+mDNSexport mDNSu32  mDNSPlatformStrLCopy(void *dst, const void *src, mDNSu32 len)
+{
+#if HAVE_STRLCPY
+    return ((mDNSu32)strlcpy((char *)dst, (const char *)src, len));
+#else
+    size_t srcLen;
+
+    srcLen = strlen((const char *)src);
+    if (srcLen < len)
+    {
+        memcpy(dst, src, srcLen + 1);
+    }
+    else if (len > 0)
+    {
+        memcpy(dst, src, len - 1);
+        ((char *)dst)[len - 1] = '\0';
+    }
+
+    return ((mDNSu32)srcLen);
+#endif
 }
 
 // mDNS core calls this routine to get the length of a C string.
 // On the Posix platform this maps directly to the ANSI C strlen.
 mDNSexport mDNSu32  mDNSPlatformStrLen (const void *src)
 {
-    return strlen((char*)src);
+    return strlen((const char*)src);
 }
 
 // mDNS core calls this routine to copy memory.
@@ -1552,10 +1569,10 @@ mDNSexport void mDNSPlatformSendWakeupPacket(mDNS *const m, mDNSInterfaceID Inte
     (void) iteration;
 }
 
-mDNSexport mDNSBool mDNSPlatformValidRecordForInterface(AuthRecord *rr, const NetworkInterfaceInfo *intf)
+mDNSexport mDNSBool mDNSPlatformValidRecordForInterface(const AuthRecord *rr, mDNSInterfaceID InterfaceID)
 {
     (void) rr;
-    (void) intf;
+    (void) InterfaceID;
 
     return 1;
 }
@@ -1614,37 +1631,38 @@ mDNSexport mStatus    mDNSPlatformStoreSPSMACAddr(mDNSAddr *spsaddr, char *ifnam
     return mStatus_NoError;
 }
 
-mDNSexport mStatus    mDNSPlatformClearSPSMACAddr(void)
+mDNSexport mStatus    mDNSPlatformClearSPSData(void)
 {
     return mStatus_NoError;
+}
+
+mDNSexport mStatus mDNSPlatformStoreOwnerOptRecord(char *ifname, DNSMessage *msg, int length)
+{
+    (void) ifname; // Unused
+    (void) msg;    // Unused
+    (void) length; // Unused
+    return mStatus_UnsupportedErr;
 }
 
 mDNSexport mDNSu16 mDNSPlatformGetUDPPort(UDPSocket *sock)
 {
     (void) sock; // unused
- 
+
     return (mDNSu16)-1;
 }
 
 mDNSexport mDNSBool mDNSPlatformInterfaceIsD2D(mDNSInterfaceID InterfaceID)
 {
     (void) InterfaceID; // unused
-    
+
     return mDNSfalse;
 }
 
-mDNSexport void mDNSPlatformGetDNSRoutePolicy(mDNS *const m, DNSQuestion *q, mDNSBool *isCellBlocked)
+mDNSexport void mDNSPlatformSetSocktOpt(void *sock, mDNSTransport_Type transType, mDNSAddr_Type addrType, const DNSQuestion *q)
 {
-    (void) m;
-
-    q->ServiceID = -1;
-    *isCellBlocked = mDNSfalse;
-}
-
-mDNSexport void mDNSPlatformSetuDNSSocktOpt(UDPSocket *src, const mDNSAddr *dst, DNSQuestion *q)
-{
-    (void) src;
-    (void) dst;
+    (void) sock;
+    (void) transType;
+    (void) addrType;
     (void) q;
 }
 

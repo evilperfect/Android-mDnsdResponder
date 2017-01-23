@@ -49,8 +49,6 @@ extern int daemon(int, int);
 #include "uds_daemon.h"
 #include "PlatformCommon.h"
 
-
-
 #define CONFIG_FILE "/etc/mdnsd.conf"
 static domainname DynDNSZone;                // Default wide-area zone for service registration
 static domainname DynDNSHostname;
