@@ -49,13 +49,7 @@ extern int daemon(int, int);
 #include "uds_daemon.h"
 #include "PlatformCommon.h"
 
-#ifndef MDNS_USERNAME
-#define MDNS_USERNAME "nobody"
-#endif
 
-#ifdef __ANDROID__
-#include <cutils/sockets.h>
-#endif
 
 #define CONFIG_FILE "/etc/mdnsd.conf"
 static domainname DynDNSZone;                // Default wide-area zone for service registration

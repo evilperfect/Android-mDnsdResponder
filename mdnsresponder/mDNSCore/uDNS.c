@@ -1,6 +1,6 @@
 /* -*- Mode: C; tab-width: 4 -*-
  *
- * Copyright (c) 2002-2013 Apple Computer, Inc. All rights reserved.
+ * Copyright (c) 2002-2015 Apple Inc. All rights reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -51,6 +51,9 @@ mDNSBool StrictUnicastOrdering = mDNSfalse;
 // arbitrary limitation of 64 DNSServers can be removed.
 mDNSu8 NumUnicastDNSServers = 0;
 #define MAX_UNICAST_DNS_SERVERS 64
+#if APPLE_OSX_mDNSResponder
+mDNSu8 NumUnreachableDNSServers = 0;
+#endif
 
 #define SetNextuDNSEvent(m, rr) { \
         if ((m)->NextuDNSEvent - ((rr)->LastAPTime + (rr)->ThisAPInterval) >= 0)                                                                              \
@@ -164,6 +167,12 @@ mDNSexport DNSServer *mDNS_AddDNSServer(mDNS *const m, const domainname *d, cons
 
     if (tmp)
     {
+#if APPLE_OSX_mDNSResponder
+        if (tmp->flags & DNSServer_FlagDelete)
+        {
+            tmp->flags &= ~DNSServer_FlagUnreachable;
+        }
+#endif
         tmp->flags &= ~DNSServer_FlagDelete;
         *p = tmp; // move to end of list, to ensure ordering from platform layer
     }
@@ -214,7 +223,8 @@ mDNSexport void PenalizeDNSServer(mDNS *const m, DNSQuestion *q, mDNSOpaque16 re
 {
     DNSServer *new;
     DNSServer *orig = q->qDNSServer;
-
+    mDNSu8 rcode = '\0';
+    
     mDNS_CheckLock(m);
 
     LogInfo("PenalizeDNSServer: Penalizing DNS server %#a question for question %p %##s (%s) SuppressUnusable %d",
@@ -224,10 +234,13 @@ mDNSexport void PenalizeDNSServer(mDNS *const m, DNSQuestion *q, mDNSOpaque16 re
     // return the error, then return the first error. 
     if (mDNSOpaque16IsZero(q->responseFlags))
         q->responseFlags = responseFlags;
+    
+    rcode = (mDNSu8)(responseFlags.b[1] & kDNSFlag1_RC_Mask);
 
     // After we reset the qDNSServer to NULL, we could get more SERV_FAILS that might end up
     // peanlizing again.
-    if (!q->qDNSServer) goto end;
+    if (!q->qDNSServer)
+        goto end;
 
     // If strict ordering of unicast servers needs to be preserved, we just lookup
     // the next best match server below
@@ -245,6 +258,10 @@ mDNSexport void PenalizeDNSServer(mDNS *const m, DNSQuestion *q, mDNSOpaque16 re
         if (q->qtype == kDNSType_PTR)
         {
             LogInfo("PenalizeDNSServer: Not Penalizing PTR question");
+        }
+        else if ((rcode == kDNSFlag1_RC_FormErr) || (rcode == kDNSFlag1_RC_ServFail) || (rcode == kDNSFlag1_RC_NotImpl) || (rcode == kDNSFlag1_RC_Refused))
+        {
+            LogInfo("PenalizeDNSServer: Not Penalizing DNS Server since it at least responded with rcode %d", rcode);
         }
         else
         {
@@ -812,11 +829,8 @@ mDNSexport mStatus mDNS_StartNATOperation_internal(mDNS *const m, NATTraversalIn
     {
         if (traversal == *n)
         {
-            LogMsg("Error! Tried to add a NAT traversal that's already in the active list: request %p Prot %d Int %d TTL %d",
+            LogFatalError("Error! Tried to add a NAT traversal that's already in the active list: request %p Prot %d Int %d TTL %d",
                    traversal, traversal->Protocol, mDNSVal16(traversal->IntPort), traversal->NATLease);
-            #if ForceAlerts
-            *(long*)0 = 0;
-            #endif
             return(mStatus_AlreadyRegistered);
         }
         if (traversal->Protocol && traversal->Protocol == (*n)->Protocol && mDNSSameIPPort(traversal->IntPort, (*n)->IntPort) &&
@@ -1329,7 +1343,8 @@ mDNSlocal void tcpCallback(TCPSocket *sock, void *context, mDNSBool ConnectionEs
     else
     {
         long n;
-        if (tcpInfo->nread < 2)         // First read the two-byte length preceeding the DNS message
+        const mDNSBool Read_replylen = (tcpInfo->nread < 2);  // Do we need to read the replylen field first?
+        if (Read_replylen)         // First read the two-byte length preceeding the DNS message
         {
             mDNSu8 *lenptr = (mDNSu8 *)&tcpInfo->replylen;
             n = mDNSPlatformReadTCP(sock, lenptr + tcpInfo->nread, 2 - tcpInfo->nread, &closed);
@@ -1377,8 +1392,13 @@ mDNSlocal void tcpCallback(TCPSocket *sock, void *context, mDNSBool ConnectionEs
 
         if (n < 0)
         {
-            LogMsg("ERROR: tcpCallback - read returned %d", n);
-            err = mStatus_ConnFailed;
+            // If this is our only read for this invokation, and it fails, then that's bad.
+            // But if we did successfully read some or all of the replylen field this time through,
+            // and this is now our second read from the socket, then it's expected that sometimes
+            // there may be no more data present, and that's perfectly okay.
+            // Assuming failure of the second read is a problem is what caused this bug:
+            // <rdar://problem/15043194> mDNSResponder fails to read DNS over TCP packet correctly
+            if (!Read_replylen) { LogMsg("ERROR: tcpCallback - read returned %d", n); err = mStatus_ConnFailed; }
             goto exit;
         }
         else if (closed)
@@ -1874,6 +1894,8 @@ mDNSlocal mStatus GetZoneData_StartQuery(mDNS *const m, ZoneData *zd, mDNSu16 qt
     zd->question.ForceMCast          = mDNSfalse;
     zd->question.ReturnIntermed      = mDNStrue;
     zd->question.SuppressUnusable    = mDNSfalse;
+    zd->question.DenyOnCellInterface = mDNSfalse;
+    zd->question.DenyOnExpInterface  = mDNSfalse;
     zd->question.SearchListIndex     = 0;
     zd->question.AppendSearchDomains = 0;
     zd->question.RetryWithSearchDomains = mDNSfalse;
@@ -1886,6 +1908,7 @@ mDNSlocal mStatus GetZoneData_StartQuery(mDNS *const m, ZoneData *zd, mDNSu16 qt
     zd->question.qnameOrig           = mDNSNULL;
     zd->question.AnonInfo            = mDNSNULL;
     zd->question.pid                 = mDNSPlatformGetPID();
+    zd->question.euid                = 0;
     zd->question.QuestionCallback    = GetZoneData_QuestionCallback;
     zd->question.QuestionContext     = zd;
 
@@ -2561,6 +2584,8 @@ mDNSlocal void GetStaticHostname(mDNS *m)
     q->ForceMCast       = mDNSfalse;
     q->ReturnIntermed   = mDNStrue;
     q->SuppressUnusable = mDNSfalse;
+    q->DenyOnCellInterface = mDNSfalse;
+    q->DenyOnExpInterface  = mDNSfalse;
     q->SearchListIndex  = 0;
     q->AppendSearchDomains = 0;
     q->RetryWithSearchDomains = mDNSfalse;
@@ -2573,6 +2598,7 @@ mDNSlocal void GetStaticHostname(mDNS *m)
     q->qnameOrig        = mDNSNULL;
     q->AnonInfo         = mDNSNULL;
     q->pid              = mDNSPlatformGetPID();
+    q->euid             = 0;
     q->QuestionCallback = FoundStaticHostname;
     q->QuestionContext  = mDNSNULL;
 
@@ -3981,6 +4007,10 @@ mDNSexport void uDNS_ReceiveMsg(mDNS *const m, DNSMessage *const msg, const mDNS
            msg->h.numAnswers,     msg->h.numAnswers     == 1 ? ", "   : "s,",
            msg->h.numAuthorities, msg->h.numAuthorities == 1 ? "y,  " : "ies,",
            msg->h.numAdditionals, msg->h.numAdditionals == 1 ? ""     : "s", end - msg->data);
+#if APPLE_OSX_mDNSResponder
+    if (NumUnreachableDNSServers > 0)
+        SymptomReporterDNSServerReachable(m, srcaddr);
+#endif
 
     if (QR_OP == StdR)
     {
@@ -4131,7 +4161,7 @@ mDNSexport void LLQGotZoneData(mDNS *const m, mStatus err, const ZoneData *zoneI
     q->servAddr = zeroAddr;
     q->servPort = zeroIPPort;
 
-    if (!err && zoneInfo && !mDNSIPPortIsZero(zoneInfo->Port) && !mDNSAddressIsZero(&zoneInfo->Addr) && zoneInfo->Host.c[0])
+    if (!err && !mDNSIPPortIsZero(zoneInfo->Port) && !mDNSAddressIsZero(&zoneInfo->Addr) && zoneInfo->Host.c[0])
     {
         q->servAddr = zoneInfo->Addr;
         q->servPort = zoneInfo->Port;
@@ -4228,9 +4258,13 @@ mDNSlocal void PrivateQueryGotZoneData(mDNS *const m, mStatus err, const ZoneDat
 // Called in normal callback context (i.e. mDNS_busy and mDNS_reentrancy are both 1)
 mDNSexport void RecordRegistrationGotZoneData(mDNS *const m, mStatus err, const ZoneData *zoneData)
 {
-    AuthRecord *newRR = (AuthRecord*)zoneData->ZoneDataContext;
+    AuthRecord *newRR;
     AuthRecord *ptr;
     int c1, c2;
+
+    if (!zoneData) { LogMsg("ERROR: RecordRegistrationGotZoneData invoked with NULL result and no error"); return; }
+    
+    newRR = (AuthRecord*)zoneData->ZoneDataContext;
 
     if (newRR->nta != zoneData)
         LogMsg("RecordRegistrationGotZoneData: nta (%p) != zoneData (%p)  %##s (%s)", newRR->nta, zoneData, newRR->resrec.name->c, DNSTypeName(newRR->resrec.rrtype));
@@ -4256,8 +4290,6 @@ mDNSexport void RecordRegistrationGotZoneData(mDNS *const m, mStatus err, const 
         newRR->nta = mDNSNULL;
         return;
     }
-
-    if (!zoneData) { LogMsg("ERROR: RecordRegistrationGotZoneData invoked with NULL result and no error"); return; }
 
     if (newRR->resrec.rrclass != zoneData->ZoneClass)
     {
@@ -4646,7 +4678,7 @@ mDNSlocal void handle_unanswered_query(mDNS *const m)
         // Note: req_DO affects only DNSSEC_VALIDATION_SECURE_OPTIONAL questions;
         // DNSSEC_VALIDATION_SECURE questions ignores req_DO.
 
-        if (q->qDNSServer && !q->qDNSServer->DNSSECAware && q->qDNSServer->req_DO)
+        if (!q->qDNSServer->DNSSECAware && q->qDNSServer->req_DO)
         {
             q->qDNSServer->retransDO++;
             if (q->qDNSServer->retransDO == MAX_DNSSEC_RETRANSMISSIONS)
@@ -4704,6 +4736,9 @@ mDNSexport void uDNS_CheckCurrentQuestion(mDNS *const m)
                 LogInfo("uDNS_CheckCurrentQuestion: Sent %d unanswered queries for %##s (%s) to %#a:%d (%##s)",
                         q->unansweredQueries, q->qname.c, DNSTypeName(q->qtype), &orig->addr, mDNSVal16(orig->port), orig->domain.c);
 
+#if APPLE_OSX_mDNSResponder
+            SymptomReporterDNSServerUnreachable(orig);
+#endif
             PenalizeDNSServer(m, q, zeroID);
             q->noServerResponse = 1;
         }
@@ -4785,10 +4820,22 @@ mDNSexport void uDNS_CheckCurrentQuestion(mDNS *const m)
                     {
                         q->LocalSocket = mDNSPlatformUDPSocket(m, zeroIPPort);
                         if (q->LocalSocket)
-                            mDNSPlatformSetDelegatePID(q->LocalSocket, &q->qDNSServer->addr, q);
+                            mDNSPlatformSetuDNSSocktOpt(q->LocalSocket, &q->qDNSServer->addr, q);
                     }
                     if (!q->LocalSocket) err = mStatus_NoMemoryErr; // If failed to make socket (should be very rare), we'll try again next time
-                    else err = mDNSSendDNSMessage(m, &m->omsg, end, q->qDNSServer->interface, q->LocalSocket, &q->qDNSServer->addr, q->qDNSServer->port, mDNSNULL, mDNSNULL, q->UseBackgroundTrafficClass);
+                    else
+                    {
+                        err = mDNSSendDNSMessage(m, &m->omsg, end, q->qDNSServer->interface, q->LocalSocket, &q->qDNSServer->addr, q->qDNSServer->port, mDNSNULL, mDNSNULL, q->UseBackgroundTrafficClass);
+#if TARGET_OS_EMBEDDED
+                        if (!err)
+                        {
+                            if (q->metrics.querySendCount++ == 0)
+                            {
+                                q->metrics.firstQueryTime = m->timenow;
+                            }
+                        }
+#endif
+                    }
                 }
             }
 
@@ -4906,7 +4953,6 @@ mDNSexport void uDNS_CheckCurrentQuestion(mDNS *const m)
 
 mDNSexport void CheckNATMappings(mDNS *m)
 {
-    mStatus err = mStatus_NoError;
     mDNSBool rfc1918 = mDNSv4AddrIsRFC1918(&m->AdvertisedV4.ip.v4);
     mDNSBool HaveRoutable = !rfc1918 && !mDNSIPv4AddressIsZero(m->AdvertisedV4.ip.v4);
     m->NextScheduledNATOp = m->timenow + 0x3FFFFFFF;
@@ -4964,7 +5010,7 @@ mDNSexport void CheckNATMappings(mDNS *m)
                     cur->retryInterval = NATMAP_INIT_RETRY;
                 }
 
-                err = uDNS_SendNATMsg(m, cur, mDNStrue); // Will also do UPnP discovery for us, if necessary
+                uDNS_SendNATMsg(m, cur, mDNStrue); // Will also do UPnP discovery for us, if necessary
 
                 if (cur->ExpiryTime)                        // If have active mapping then set next renewal time halfway to expiry
                     NATSetNextRenewalTime(m, cur);

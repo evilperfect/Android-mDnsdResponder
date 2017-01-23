@@ -603,7 +603,6 @@ static mStatus RegisterServicesInFile(const char *filePath)
         status = mStatus_UnknownErr;
     }
 
-    //assert(0 == fclose(fp));
     fclose(fp);
 
     return status;

@@ -25,7 +25,7 @@
 #endif
 
 #ifdef  __cplusplus
-    extern "C" {
+extern "C" {
 #endif
 
 // PosixNetworkInterface is a record extension of the core NetworkInterfaceInfo
@@ -38,7 +38,8 @@ typedef struct PosixNetworkInterface PosixNetworkInterface;
 
 struct PosixNetworkInterface
 {
-    NetworkInterfaceInfo coreIntf;
+    NetworkInterfaceInfo coreIntf;		// MUST be the first element in this structure
+    mDNSs32 LastSeen;
     const char *            intfName;
     PosixNetworkInterface * aliasIntf;
     int index;

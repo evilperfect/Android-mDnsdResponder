@@ -54,6 +54,9 @@
     #include <net/if_dl.h>
 #endif
 
+
+
+
 #if defined(AF_INET6) && HAVE_IPV6 && !HAVE_LINUX
 #include <net/if_var.h>
 #include <netinet/in_var.h>
@@ -83,14 +86,12 @@ void plen_to_mask(int plen, char *addr) {
 struct ifi_info *get_ifi_info_linuxv6(int family, int doaliases)
 {
     struct ifi_info *ifi, *ifihead, **ifipnext, *ifipold, **ifiptr;
-    FILE *fp;
+    FILE *fp = NULL;
     char addr[8][5];
     int flags, myflags, index, plen, scope;
     char ifname[9], lastname[IFNAMSIZ];
     char addr6[32+7+1]; /* don't forget the seven ':' */
     struct addrinfo hints, *res0;
-    struct sockaddr_in6 *sin6;
-    struct in6_addr *addrptr;
     int err;
     int sockfd = -1;
     struct ifreq ifr;
@@ -117,10 +118,7 @@ struct ifi_info *get_ifi_info_linuxv6(int family, int doaliases)
                     continue;   /* already processed this interface */
                 myflags = IFI_ALIAS;
             }
-
-            //strncpy(lastname, ifname, IFNAMSIZ);
-			//memcpy(lastname, ifname, IFNAMSIZ);
-			memcpy(lastname, ifname, sizeof(ifname)/*IFNAMSIZ*/);
+			strncpy(lastname, ifname, IFNAMSIZ);
             ifi = (struct ifi_info*)calloc(1, sizeof(struct ifi_info));
             if (ifi == NULL) {
                 goto gotError;
@@ -153,31 +151,23 @@ struct ifi_info *get_ifi_info_linuxv6(int family, int doaliases)
             char ipv6addr[INET6_ADDRSTRLEN];
             plen_to_mask(plen, ipv6addr);
             ifi->ifi_netmask = calloc(1, sizeof(struct sockaddr_in6));
-            if (ifi->ifi_addr == NULL) {
+            if (ifi->ifi_netmask == NULL) {
                 goto gotError;
             }
-            sin6=calloc(1, sizeof(struct sockaddr_in6));
-            addrptr=calloc(1, sizeof(struct in6_addr));
-            inet_pton(family, ipv6addr, addrptr);
-            sin6->sin6_family=family;
-            sin6->sin6_addr=*addrptr;
-            sin6->sin6_scope_id=scope;
-            memcpy(ifi->ifi_netmask, sin6, sizeof(struct sockaddr_in6));
-            free(sin6);
+
+            ((struct sockaddr_in6 *)ifi->ifi_netmask)->sin6_family=family;
+            ((struct sockaddr_in6 *)ifi->ifi_netmask)->sin6_scope_id=scope;
+            inet_pton(family, ipv6addr, &((struct sockaddr_in6 *)ifi->ifi_netmask)->sin6_addr);
 
 
             /* Add interface name */
-            //strncpy(ifi->ifi_name, ifname, IFI_NAME);
-			//memcpy(ifi->ifi_name, ifname, IFI_NAME);
-            memcpy(ifi->ifi_name, ifname, sizeof(ifname)/*IFI_NAME*/);
+            strncpy(ifi->ifi_name, ifname, IFI_NAME);
 
             /* Add interface index */
             ifi->ifi_index = index;
 
             /* Add interface flags*/
-			//strncpy(ifr.ifr_name, ifname, IFNAMSIZ);
-			//memcpy(ifr.ifr_name, ifname, IFNAMSIZ);
-            memcpy(ifr.ifr_name, ifname, sizeof(ifname)/*IFNAMSIZ*/);
+            strncpy(ifr.ifr_name, ifname, IFNAMSIZ);
             if (ioctl(sockfd, SIOCGIFFLAGS, &ifr) < 0) {
                 if (errno == EADDRNOTAVAIL) {
                     /*
@@ -186,6 +176,7 @@ struct ifi_info *get_ifi_info_linuxv6(int family, int doaliases)
                      * EADDRNOTAVAIL for the main interface
                      */
                     free(ifi->ifi_addr);
+                    free(ifi->ifi_netmask);
                     free(ifi);
                     ifipnext  = ifiptr;
                     *ifipnext = ifipold;
@@ -212,12 +203,9 @@ gotError:
     }
 done:
     if (sockfd != -1) {
-        //assert(close(sockfd) == 0);
         close(sockfd);
     }
-
-    if (fp)
-    {
+    if (fp != NULL) {
         fclose(fp);
     }
     return(ifihead);    /* pointer to first structure in linked list */

@@ -1,6 +1,6 @@
 /* -*- Mode: C; tab-width: 4 -*-
  *
- * Copyright (c) 2002-2004 Apple Computer, Inc. All rights reserved.
+ * Copyright (c) 2002-2015 Apple Inc. All rights reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -82,6 +82,8 @@ static int gMaxFD;                              // largest fd in gEventFDs
 static GenLinkedList gEventSources;             // linked list of PosixEventSource's
 static sigset_t gEventSignalSet;                // Signals which event loop listens for
 static sigset_t gEventSignals;                  // Signals which were received while inside loop
+
+static PosixNetworkInterface *gRecentInterfaces;
 
 // ***************************************************************************
 // Globals (for debugging)
@@ -577,6 +579,13 @@ mDNSexport mDNSu32 mDNSPlatformInterfaceIndexfromInterfaceID(mDNS *const m, mDNS
     while ((intf != NULL) && (mDNSInterfaceID) intf != id)
         intf = (PosixNetworkInterface *)(intf->coreIntf.next);
 
+    if (intf) return intf->index;
+
+    // If we didn't find the interface, check the RecentInterfaces list as well
+    intf = gRecentInterfaces;
+    while ((intf != NULL) && (mDNSInterfaceID) intf != id)
+        intf = (PosixNetworkInterface *)(intf->coreIntf.next);
+
     return intf ? intf->index : 0;
 }
 
@@ -588,19 +597,21 @@ mDNSlocal void FreePosixNetworkInterface(PosixNetworkInterface *intf)
     if (intf->intfName != NULL) free((void *)intf->intfName);
     if (intf->multicastSocket4 != -1) 
     {
-        //assert(close(intf->multicastSocket4) == 0);
         close(intf->multicastSocket4);
 
     }
 #if HAVE_IPV6
     if (intf->multicastSocket6 != -1)
     {
-        //assert(close(intf->multicastSocket6) == 0);        
         close(intf->multicastSocket6);
 
     }
 #endif
-    free(intf);
+
+    // Move interface to the RecentInterfaces list for a minute
+    intf->LastSeen = mDNSPlatformUTC();
+    intf->coreIntf.next = &gRecentInterfaces->coreIntf;
+    gRecentInterfaces = intf;
 }
 
 // Grab the first interface, deregister it, free it, and repeat until done.
@@ -648,14 +659,34 @@ mDNSlocal int SetupSocket(struct sockaddr *intfAddr, mDNSIPPort port, int interf
     // ... with a shared UDP port, if it's for multicast receiving
     if (err == 0 && port.NotAnInteger)
     {
-        #if defined(SO_REUSEPORT)
-        err = setsockopt(*sktPtr, SOL_SOCKET, SO_REUSEPORT, &kOn, sizeof(kOn));
-        #elif defined(SO_REUSEADDR)
+        // <rdar://problem/20946253>
+        // We test for SO_REUSEADDR first, as suggested by Jonny Törnbom from Axis Communications
+        // Linux kernel versions 3.9 introduces support for socket option
+        // SO_REUSEPORT, however this is not implemented the same as on *BSD
+        // systems. Linux version implements a "port hijacking" prevention
+        // mechanism, limiting processes wanting to bind to an already existing
+        // addr:port to have the same effective UID as the first who bound it. What
+        // this meant for us was that the daemon ran as one user and when for
+        // instance mDNSClientPosix was executed by another user, it wasn't allowed
+        // to bind to the socket. Our suggestion was to switch the order in which
+        // SO_REUSEPORT and SO_REUSEADDR was tested so that SO_REUSEADDR stays on
+        // top and SO_REUSEPORT to be used only if SO_REUSEADDR doesn't exist.
+        #if defined(SO_REUSEADDR) && !defined(__MAC_OS_X_VERSION_MIN_REQUIRED)
         err = setsockopt(*sktPtr, SOL_SOCKET, SO_REUSEADDR, &kOn, sizeof(kOn));
+        #elif defined(SO_REUSEPORT)
+        err = setsockopt(*sktPtr, SOL_SOCKET, SO_REUSEPORT, &kOn, sizeof(kOn));
         #else
             #error This platform has no way to avoid address busy errors on multicast.
         #endif
         if (err < 0) { err = errno; perror("setsockopt - SO_REUSExxxx"); }
+
+        // Enable inbound packets on IFEF_AWDL interface.
+        // Only done for multicast sockets, since we don't expect unicast socket operations
+        // on the IFEF_AWDL interface. Operation is a no-op for other interface types.
+        #ifndef SO_RECV_ANYIF
+        #define SO_RECV_ANYIF   0x1104      /* unrestricted inbound processing */
+        #endif
+        if (setsockopt(*sktPtr, SOL_SOCKET, SO_RECV_ANYIF, &kOn, sizeof(kOn)) < 0) perror("setsockopt - SO_RECV_ANYIF");
     }
 
     // We want to receive destination addresses and interface identifiers.
@@ -839,7 +870,6 @@ mDNSlocal int SetupSocket(struct sockaddr *intfAddr, mDNSIPPort port, int interf
     // Clean up
     if (err != 0 && *sktPtr != -1) 
     {
-        //assert(close(*sktPtr) == 0);
         close(*sktPtr);
         *sktPtr = -1; 
     }
@@ -861,7 +891,7 @@ mDNSlocal int SetupOneInterface(mDNS *const m, struct sockaddr *intfAddr, struct
     assert(intfMask != NULL);
 
     // Allocate the interface structure itself.
-    intf = (PosixNetworkInterface*)malloc(sizeof(*intf));
+    intf = (PosixNetworkInterface*)calloc(1, sizeof(*intf));
     if (intf == NULL) { assert(0); err = ENOMEM; }
 
     // And make a copy of the intfName.
@@ -911,7 +941,12 @@ mDNSlocal int SetupOneInterface(mDNS *const m, struct sockaddr *intfAddr, struct
 
     // If interface is a direct link, address record will be marked as kDNSRecordTypeKnownUnique
     // and skip the probe phase of the probe/announce packet sequence.
-    intf->coreIntf.DirectLink = mDNStrue;//mDNSfalse;
+    intf->coreIntf.DirectLink = mDNSfalse;
+#ifdef DIRECTLINK_INTERFACE_NAME
+	if (strcmp(intfName, STRINGIFY(DIRECTLINK_INTERFACE_NAME)) == 0)
+		intf->coreIntf.DirectLink = mDNStrue;
+#endif
+    intf->coreIntf.SupportsUnicastMDNSResponse = mDNStrue;
 
     // The interface is all ready to go, let's register it with the mDNS core.
     if (err == 0)
@@ -996,6 +1031,17 @@ mDNSlocal int SetupInterfaceList(mDNS *const m)
 
     // Clean up.
     if (intfList != NULL) free_ifi_info(intfList);
+
+    // Clean up any interfaces that have been hanging around on the RecentInterfaces list for more than a minute
+    PosixNetworkInterface **ri = &gRecentInterfaces;
+    const mDNSs32 utc = mDNSPlatformUTC();
+    while (*ri)
+    {
+        PosixNetworkInterface *pi = *ri;
+        if (utc - pi->LastSeen < 60) ri = (PosixNetworkInterface **)&pi->coreIntf.next;
+        else { *ri = (PosixNetworkInterface *)pi->coreIntf.next; free(pi); }
+    }
+
     return err;
 }
 
@@ -1314,21 +1360,25 @@ mDNSexport void mDNSPlatformClose(mDNS *const m)
     ClearInterfaceList(m);
     if (m->p->unicastSocket4 != -1) 
     {
-        //assert(close(m->p->unicastSocket4) == 0);
         close(m->p->unicastSocket4);
     }
 #if HAVE_IPV6
     if (m->p->unicastSocket6 != -1)
     {
-        //assert(close(m->p->unicastSocket6) == 0);
         close(m->p->unicastSocket6);
     }
 #endif
 }
 
+// This is used internally by InterfaceChangeCallback.
+// It's also exported so that the Standalone Responder (mDNSResponderPosix)
+// can call it in response to a SIGHUP (mainly for debugging purposes).
 mDNSexport mStatus mDNSPlatformPosixRefreshInterfaceList(mDNS *const m)
 {
     int err;
+    // This is a pretty heavyweight way to process interface changes --
+    // destroying the entire interface list and then making fresh one from scratch.
+    // We should make it like the OS X version, which leaves unchanged interfaces alone.
     ClearInterfaceList(m);
     err = SetupInterfaceList(m);
     return PosixErrorToStatus(err);
@@ -1583,21 +1633,15 @@ mDNSexport mDNSBool mDNSPlatformInterfaceIsD2D(mDNSInterfaceID InterfaceID)
     return mDNSfalse;
 }
 
-mDNSexport mDNSBool mDNSPlatformAllowPID(mDNS *const m, DNSQuestion *q)
+mDNSexport void mDNSPlatformGetDNSRoutePolicy(mDNS *const m, DNSQuestion *q, mDNSBool *isCellBlocked)
 {
     (void) m;
-    (void) q;
-    return mDNStrue;
+
+    q->ServiceID = -1;
+    *isCellBlocked = mDNSfalse;
 }
 
-mDNSexport mDNSs32 mDNSPlatformGetServiceID(mDNS *const m, DNSQuestion *q)
-{
-    (void) m;
-    (void) q;
-    return -1;
-}
-
-mDNSexport void mDNSPlatformSetDelegatePID(UDPSocket *src, const mDNSAddr *dst, DNSQuestion *q)
+mDNSexport void mDNSPlatformSetuDNSSocktOpt(UDPSocket *src, const mDNSAddr *dst, DNSQuestion *q)
 {
     (void) src;
     (void) dst;
