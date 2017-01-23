@@ -195,15 +195,7 @@ int main(int argc, char **argv)
 
     // Now that we're finished with anything privileged, switch over to running as "nobody"
     if (mStatus_NoError == err)
-    {
-        const struct passwd *pw = getpwnam("nobody");
-        if (pw != NULL)
-            setuid(pw->pw_uid);
-        else
-            LogMsg("WARNING: mdnsd continuing as root because user \"nobody\" does not exist");
-    }
 
-    if (mStatus_NoError == err)
         err = MainLoop(&mDNSStorage);
 
     LogMsg("%s stopping", mDNSResponderVersionString);

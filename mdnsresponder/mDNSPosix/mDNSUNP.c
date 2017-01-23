@@ -117,6 +117,9 @@ struct ifi_info *get_ifi_info_linuxv6(int family, int doaliases)
                     continue;   /* already processed this interface */
                 myflags = IFI_ALIAS;
             }
+
+            //strncpy(lastname, ifname, IFNAMSIZ);
+			//memcpy(lastname, ifname, IFNAMSIZ);
 			memcpy(lastname, ifname, sizeof(ifname)/*IFNAMSIZ*/);
             ifi = (struct ifi_info*)calloc(1, sizeof(struct ifi_info));
             if (ifi == NULL) {
@@ -164,13 +167,17 @@ struct ifi_info *get_ifi_info_linuxv6(int family, int doaliases)
 
 
             /* Add interface name */
+            //strncpy(ifi->ifi_name, ifname, IFI_NAME);
+			//memcpy(ifi->ifi_name, ifname, IFI_NAME);
             memcpy(ifi->ifi_name, ifname, sizeof(ifname)/*IFI_NAME*/);
 
             /* Add interface index */
             ifi->ifi_index = index;
 
             /* Add interface flags*/
-			memcpy(ifr.ifr_name, ifname, sizeof(ifname)/*IFNAMSIZ*/);
+			//strncpy(ifr.ifr_name, ifname, IFNAMSIZ);
+			//memcpy(ifr.ifr_name, ifname, IFNAMSIZ);
+            memcpy(ifr.ifr_name, ifname, sizeof(ifname)/*IFNAMSIZ*/);
             if (ioctl(sockfd, SIOCGIFFLAGS, &ifr) < 0) {
                 if (errno == EADDRNOTAVAIL) {
                     /*
@@ -205,7 +212,13 @@ gotError:
     }
 done:
     if (sockfd != -1) {
-        assert(close(sockfd) == 0);
+        //assert(close(sockfd) == 0);
+        close(sockfd);
+    }
+
+    if (fp)
+    {
+        fclose(fp);
     }
     return(ifihead);    /* pointer to first structure in linked list */
 }

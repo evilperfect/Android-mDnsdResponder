@@ -521,6 +521,11 @@ mDNSexport int ParseDNSServers(mDNS *m, const char *filePath)
             numOfServers++;
         }
     }
+
+    if (fp)
+    {
+      fclose(fp);
+    }
     return (numOfServers > 0) ? 0 : -1;
 }
 
@@ -581,9 +586,19 @@ mDNSlocal void FreePosixNetworkInterface(PosixNetworkInterface *intf)
 {
     assert(intf != NULL);
     if (intf->intfName != NULL) free((void *)intf->intfName);
-    if (intf->multicastSocket4 != -1) assert(close(intf->multicastSocket4) == 0);
+    if (intf->multicastSocket4 != -1) 
+    {
+        //assert(close(intf->multicastSocket4) == 0);
+        close(intf->multicastSocket4);
+
+    }
 #if HAVE_IPV6
-    if (intf->multicastSocket6 != -1) assert(close(intf->multicastSocket6) == 0);
+    if (intf->multicastSocket6 != -1)
+    {
+        //assert(close(intf->multicastSocket6) == 0);        
+        close(intf->multicastSocket6);
+
+    }
 #endif
     free(intf);
 }
@@ -822,7 +837,12 @@ mDNSlocal int SetupSocket(struct sockaddr *intfAddr, mDNSIPPort port, int interf
     }
 
     // Clean up
-    if (err != 0 && *sktPtr != -1) { assert(close(*sktPtr) == 0); *sktPtr = -1; }
+    if (err != 0 && *sktPtr != -1) 
+    {
+        //assert(close(*sktPtr) == 0);
+        close(*sktPtr);
+        *sktPtr = -1; 
+    }
     assert((err == 0) == (*sktPtr != -1));
     return err;
 }
@@ -888,17 +908,10 @@ mDNSlocal int SetupOneInterface(mDNS *const m, struct sockaddr *intfAddr, struct
             err = SetupSocket(intfAddr, MulticastDNSPort, intf->index, &alias->multicastSocket6);
 #endif
     }
-     
 
-	 /*
-	 ** NOTICE! Digital output (IOS IN THE CAR)request support DirectLink optimization.
-	 ** As the comment indicates, setting this value to true indicates the address record is unique 
-	 ** and mDNSResponder will not probe for the address record on the interface, thus eliminating 
-	 ** a potential ~ one second delay in discovery over the interface.
-	 */ 
     // If interface is a direct link, address record will be marked as kDNSRecordTypeKnownUnique
     // and skip the probe phase of the probe/announce packet sequence.
-    intf->coreIntf.DirectLink = mDNSfalse;
+    intf->coreIntf.DirectLink = mDNStrue;//mDNSfalse;
 
     // The interface is all ready to go, let's register it with the mDNS core.
     if (err == 0)
@@ -1087,10 +1100,14 @@ mDNSlocal mDNSu32       ProcessRoutingNotification(int sd)
 #endif
 
         // Process the NetLink message
-        if (pNLMsg->nlmsg_type == RTM_GETLINK || pNLMsg->nlmsg_type == RTM_NEWLINK)
-            result |= 1 << ((struct ifinfomsg*) NLMSG_DATA(pNLMsg))->ifi_index;
-        else if (pNLMsg->nlmsg_type == RTM_DELADDR || pNLMsg->nlmsg_type == RTM_NEWADDR)
-            result |= 1 << ((struct ifaddrmsg*) NLMSG_DATA(pNLMsg))->ifa_index;
+        if (pNLMsg->nlmsg_type == RTM_GETLINK || pNLMsg->nlmsg_type == RTM_NEWLINK) {
+            //result |= 1 << ((struct ifinfomsg*) NLMSG_DATA(pNLMsg))->ifi_index;
+            result |= ((struct ifinfomsg*) NLMSG_DATA(pNLMsg))->ifi_index;
+        }
+        else if (pNLMsg->nlmsg_type == RTM_DELADDR || pNLMsg->nlmsg_type == RTM_NEWADDR) {
+            //result |= 1 << ((struct ifaddrmsg*) NLMSG_DATA(pNLMsg))->ifa_index;
+            result |= ((struct ifaddrmsg*) NLMSG_DATA(pNLMsg))->ifa_index;
+        }
 
         // Advance pNLMsg to the next message in the buffer
         if ((pNLMsg->nlmsg_flags & NLM_F_MULTI) != 0 && pNLMsg->nlmsg_type != NLMSG_DONE)
@@ -1295,9 +1312,17 @@ mDNSexport void mDNSPlatformClose(mDNS *const m)
 {
     assert(m != NULL);
     ClearInterfaceList(m);
-    if (m->p->unicastSocket4 != -1) assert(close(m->p->unicastSocket4) == 0);
+    if (m->p->unicastSocket4 != -1) 
+    {
+        //assert(close(m->p->unicastSocket4) == 0);
+        close(m->p->unicastSocket4);
+    }
 #if HAVE_IPV6
-    if (m->p->unicastSocket6 != -1) assert(close(m->p->unicastSocket6) == 0);
+    if (m->p->unicastSocket6 != -1)
+    {
+        //assert(close(m->p->unicastSocket6) == 0);
+        close(m->p->unicastSocket6);
+    }
 #endif
 }
 
