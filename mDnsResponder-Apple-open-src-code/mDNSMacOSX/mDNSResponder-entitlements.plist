@@ -8,8 +8,6 @@
     <true/>
     <key>com.apple.private.network.socket-delegate</key>
     <true/>
-    <key>com.apple.networkd.cellular_blocked.notify</key>
-    <true/>
     <key>com.apple.private.SCNetworkConnection-proxy-user</key>
     <true/>
     <key>com.apple.private.network.reserved-port</key>
@@ -18,7 +16,13 @@
     <true/>
     <key>com.apple.private.snhelper</key>
     <true/>
-    <key>com.apple.telephony.cupolicy-monitor-access</key>
+    <key>com.apple.private.necp.match</key>
+    <true/>
+    <key>com.apple.security.network.server</key>
+    <true/>
+    <key>com.apple.security.network.client</key>
+    <true/>
+    <key>com.apple.private.network.awdl.restricted</key>
     <true/>
 </dict>
 </plist>
